@@ -1,0 +1,125 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-display: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-body: 'DM Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    background-color: #000000;
+    color: #ffffff;
+  }
+
+  body {
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow: hidden;
+    touch-action: manipulation;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .font-mono, .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.studio-grid-bg {
+  background-color: #0b0b0d;
+  background-image: radial-gradient(#1f1f24 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Element Animations (Live Preview & Canvas) */
+@keyframes pcanvaFade {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+@keyframes pcanvaBounce {
+  0%, 100% { transform: translateY(0); }
+  45% { transform: translateY(-16px); }
+  75% { transform: translateY(-6px); }
+}
+@keyframes pcanvaSlide {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(18px); }
+}
+@keyframes pcanvaZoom {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+}
+@keyframes pcanvaSpin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+@keyframes pcanvaPop {
+  0%, 100% { transform: scale(1); }
+  25% { transform: scale(1.18); }
+  50% { transform: scale(0.94); }
+  75% { transform: scale(1.06); }
+}
+@keyframes pcanvaFloat {
+  0%, 100% { transform: translateY(0px) rotate(0deg); }
+  50% { transform: translateY(-10px) rotate(1.5deg); }
+}
+@keyframes pcanvaShake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+@keyframes pcanvaVideoPan {
+  0% { transform: scale(1.06) translateX(-2%); }
+  50% { transform: scale(1.12) translateX(2%); }
+  100% { transform: scale(1.06) translateX(-2%); }
+}
+
+.anim-fade { animation: pcanvaFade 2.2s ease-in-out infinite; }
+.anim-bounce { animation: pcanvaBounce 1.4s ease-in-out infinite; }
+.anim-slide { animation: pcanvaSlide 2s ease-in-out infinite; }
+.anim-zoom { animation: pcanvaZoom 2s ease-in-out infinite; }
+.anim-spin { animation: pcanvaSpin 3.2s linear infinite; }
+.anim-pop { animation: pcanvaPop 1.6s ease-in-out infinite; }
+.anim-float { animation: pcanvaFloat 2.6s ease-in-out infinite; }
+.anim-shake { animation: pcanvaShake 1.2s ease-in-out infinite; }
+.anim-video-play { animation: pcanvaVideoPan 6s ease-in-out infinite; }
+
+/* Custom thin dark scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(161, 161, 170, 0.25);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(161, 161, 170, 0.45);
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-artboard, .print-artboard * {
+    visibility: visible;
+  }
+  .print-artboard {
+    position: fixed;
+    inset: 0;
+  }
+}

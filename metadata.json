@@ -1,0 +1,6 @@
+{
+  "name": "p.canva",
+  "description": "Enterprise collaborative design studio with real-time multiplayer editing, brand governance, approval workflows, and project management integrations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
