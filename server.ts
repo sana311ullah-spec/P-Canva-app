@@ -47,6 +47,25 @@ async function startServer() {
     res.json({ ok: true, clients: clients.size });
   });
 
+  // Explicit PWA headers for manifest.json and sw.js in both dev and production
+  const pwaRoot =
+    process.env.NODE_ENV === 'production'
+      ? path.resolve(__dirname, 'dist')
+      : path.resolve(__dirname, 'public');
+
+  app.get('/manifest.json', (_req, res) => {
+    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(path.join(pwaRoot, 'manifest.json'));
+  });
+
+  app.get('/sw.js', (_req, res) => {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Service-Worker-Allowed', '/');
+    res.sendFile(path.join(pwaRoot, 'sw.js'));
+  });
+
   app.get('/api/workspace', (_req, res) => {
     res.json(workspaceState);
   });
@@ -549,9 +568,20 @@ async function startServer() {
     }
   });
 
+  const httpServer = createServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: true,
+        hmr: false,
+        watch: null,
+        ws: {
+          server: httpServer,
+          path: '/vite-ws',
+        },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -562,8 +592,16 @@ async function startServer() {
     });
   }
 
-  const httpServer = createServer(app);
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  const wss = new WebSocketServer({ noServer: true });
+
+  httpServer.on('upgrade', (request, socket, head) => {
+    const pathname = new URL(request.url || '/', 'http://localhost').pathname;
+    if (pathname === '/ws') {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    }
+  });
 
   wss.on('connection', (ws) => {
     const clientId = `client-${Math.random().toString(36).slice(2, 10)}`;

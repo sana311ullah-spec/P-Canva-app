@@ -33,6 +33,8 @@ import type {
   WorkspaceState,
 } from '../../types/studio';
 import { ElementRenderer } from '../studio/ElementRenderer';
+import { useOnlineStatus } from '../../hooks/useOnlineStatus';
+import { PWAInstallButton } from '../pwa/PWAInstallButton';
 
 export type HubTab = 'home' | 'designs' | 'templates' | 'ai' | 'more';
 
@@ -171,6 +173,7 @@ export const WorkspaceHub: React.FC<WorkspaceHubProps> = ({
   const [moreSection, setMoreSection] = useState<'pm' | 'brand' | 'approvals'>('pm');
   const [newColorHex, setNewColorHex] = useState('#0F766E');
   const [newColorName, setNewColorName] = useState('Accent');
+  const isOnline = useOnlineStatus();
 
   const filteredTemplates = DESIGN_TEMPLATES.filter((t) => {
     const matchesSearch =
@@ -236,6 +239,10 @@ export const WorkspaceHub: React.FC<WorkspaceHubProps> = ({
   const handleGenerateAI = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!aiPrompt.trim() || aiLoading) return;
+    if (!isOnline) {
+      setAiError('Connect to internet to use Canva AI — all templates, shapes, graphics, and editor tools work offline.');
+      return;
+    }
     setAiLoading(true);
     setAiError(null);
     try {
@@ -339,7 +346,7 @@ export const WorkspaceHub: React.FC<WorkspaceHubProps> = ({
   };
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-black text-white overflow-hidden">
+    <div className="h-full w-full flex flex-col bg-black text-white overflow-hidden">
       {/* Hidden gallery upload input */}
       <input
         ref={uploadInputRef}
@@ -350,7 +357,7 @@ export const WorkspaceHub: React.FC<WorkspaceHubProps> = ({
       />
 
       {/* Black Top Header */}
-      <header className="h-14 shrink-0 bg-black border-b border-neutral-900 px-4 sm:px-6 flex items-center justify-between gap-4">
+      <header className="h-14 shrink-0 bg-black border-b border-neutral-900 px-4 sm:px-6 flex items-center justify-between gap-3">
         <div className="font-display font-bold text-xl tracking-tight text-white">
           p.canva
         </div>
@@ -365,13 +372,18 @@ export const WorkspaceHub: React.FC<WorkspaceHubProps> = ({
       </header>
 
       {/* Scrollable Main Content */}
-      <main className="flex-1 overflow-y-auto pb-24 px-4 sm:px-6 lg:px-10 pt-5">
-        <div className="max-w-6xl mx-auto space-y-8">
+      <main className="flex-1 overflow-y-auto pb-24 px-4 sm:px-6 lg:px-10 pt-4">
+        <div className="max-w-6xl mx-auto space-y-7">
           {/* ============================================================== */}
           {/* 1. HOME PAGE                                                   */}
           {/* ============================================================== */}
           {activeTab === 'home' && (
             <>
+              {/* Big Install App Button at top right under + Create */}
+              <div className="flex justify-end">
+                <PWAInstallButton variant="topRight" />
+              </div>
+
               {/* Hero Greeting & Search */}
               <section className="space-y-4">
                 <h1 className="text-2xl sm:text-3xl font-display font-bold text-white tracking-tight">

@@ -74,6 +74,8 @@ import type {
   UploadedAsset,
 } from '../../types/studio';
 import { getPlayingAudioId, subscribeAudioState, toggleAudioPreview } from '../../utils/audioPlayer';
+import { useOnlineStatus } from '../../hooks/useOnlineStatus';
+import { cacheSearchPhotos, getCachedPhotos } from '../../utils/offlineStorage';
 
 export type LeftDockTab =
   | 'templates'
@@ -445,6 +447,7 @@ export const LeftObjectDock: React.FC<LeftObjectDockProps> = ({
   const [magicError, setMagicError] = useState<string | null>(null);
 
   // Gallery / Photos state
+  const isOnline = useOnlineStatus();
   const [photoSearchInput, setPhotoSearchInput] = useState('');
   const [activePhotoQuery, setActivePhotoQuery] = useState('');
   const [activePhotoTopic, setActivePhotoTopic] = useState<string>('All');
@@ -452,6 +455,7 @@ export const LeftObjectDock: React.FC<LeftObjectDockProps> = ({
   const [photoPage, setPhotoPage] = useState(1);
   const [photosLoading, setPhotosLoading] = useState(false);
   const [photoHasMore, setPhotoHasMore] = useState(true);
+  const [photoOfflineFallback, setPhotoOfflineFallback] = useState(false);
   const [starterVisibleCount, setStarterVisibleCount] = useState(28);
   const photoSentinelRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -512,32 +516,58 @@ export const LeftObjectDock: React.FC<LeftObjectDockProps> = ({
     [filteredStarterPhotos, starterVisibleCount],
   );
 
-  const fetchLivePhotos = useCallback(async (query: string, pageNum: number, append: boolean) => {
-    setPhotosLoading(true);
-    try {
-      const res = await fetch(
-        `/api/photos/search?query=${encodeURIComponent(query)}&page=${pageNum}`,
-      );
-      const data = await res.json();
-      const incoming = (data.photos || []) as StockPhotoItem[];
-      setLivePhotos((prev) => (append ? [...prev, ...incoming] : incoming));
-      setPhotoHasMore(Boolean(data.hasMore) && incoming.length > 0);
-    } catch {
-      if (!append) {
-        const qLow = query.toLowerCase();
-        setLivePhotos(
-          STARTER_PHOTOS.filter(
-            (p) =>
-              p.title.toLowerCase().includes(qLow) ||
-              p.category.toLowerCase().includes(qLow),
-          ),
-        );
+  const getOfflineMatchingPhotos = useCallback((query: string): StockPhotoItem[] => {
+    const qLow = query.toLowerCase();
+    const combined = [...getCachedPhotos(), ...STARTER_PHOTOS];
+    const seen = new Set<string>();
+    const deduped: StockPhotoItem[] = [];
+    for (const item of combined) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id);
+        deduped.push(item);
       }
-      setPhotoHasMore(false);
-    } finally {
-      setPhotosLoading(false);
     }
+    const matches = deduped.filter(
+      (p) => p.title.toLowerCase().includes(qLow) || p.category.toLowerCase().includes(qLow),
+    );
+    return matches.length > 0 ? matches : deduped.slice(0, 24);
   }, []);
+
+  const fetchLivePhotos = useCallback(
+    async (query: string, pageNum: number, append: boolean) => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setPhotoOfflineFallback(true);
+        if (!append) {
+          setLivePhotos(getOfflineMatchingPhotos(query));
+        }
+        setPhotoHasMore(false);
+        return;
+      }
+
+      setPhotosLoading(true);
+      try {
+        const res = await fetch(
+          `/api/photos/search?query=${encodeURIComponent(query)}&page=${pageNum}`,
+        );
+        if (!res.ok) throw new Error('Photo search unavailable');
+        const data = await res.json();
+        const incoming = (data.photos || []) as StockPhotoItem[];
+        setPhotoOfflineFallback(false);
+        cacheSearchPhotos(incoming);
+        setLivePhotos((prev) => (append ? [...prev, ...incoming] : incoming));
+        setPhotoHasMore(Boolean(data.hasMore) && incoming.length > 0);
+      } catch {
+        setPhotoOfflineFallback(true);
+        if (!append) {
+          setLivePhotos(getOfflineMatchingPhotos(query));
+        }
+        setPhotoHasMore(false);
+      } finally {
+        setPhotosLoading(false);
+      }
+    },
+    [getOfflineMatchingPhotos],
+  );
 
   // Infinite scroll for gallery photos (also when Photos category is open inside Elements)
   const isPhotosViewOpen = activeTab === 'gallery' || (activeTab === 'elements' && activeElCategory === 'Photos');
@@ -628,6 +658,10 @@ export const LeftObjectDock: React.FC<LeftObjectDockProps> = ({
   const handleMagicWriteSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!magicPrompt.trim() || magicLoading) return;
+    if (!isOnline) {
+      setMagicError('Connect to internet for Magic Write AI — all 33 fonts and text tools work offline.');
+      return;
+    }
     setMagicLoading(true);
     setMagicError(null);
     try {
@@ -1109,6 +1143,12 @@ export const LeftObjectDock: React.FC<LeftObjectDockProps> = ({
                         Go
                       </button>
                     </form>
+
+                    {(!isOnline || photoOfflineFallback) && (
+                      <div className="px-3 py-2 rounded-xl bg-neutral-950 border border-amber-500/40 text-[11px] text-amber-300">
+                        Connect to internet for new photos — showing cached &amp; built-in photos.
+                      </div>
+                    )}
 
                     <div className="flex gap-1.5 overflow-x-auto pb-1">
                       {['All', ...PHOTO_TOPICS].map((topic) => (
@@ -1817,6 +1857,12 @@ export const LeftObjectDock: React.FC<LeftObjectDockProps> = ({
               <ImagePlus className="w-4 h-4" />
               <span>Upload from device gallery</span>
             </button>
+
+            {(!isOnline || photoOfflineFallback) && (
+              <div className="px-3 py-2 rounded-xl bg-neutral-950 border border-amber-500/40 text-[11px] text-amber-300">
+                Connect to internet for new photos — showing cached &amp; built-in photos.
+              </div>
+            )}
 
             {uploads.length > 0 && (
               <div className="space-y-2">

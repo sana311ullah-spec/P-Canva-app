@@ -11,9 +11,19 @@ import type {
   UploadedAsset,
   WorkspaceState,
 } from '../types/studio';
+import {
+  getDeletedDesignIds,
+  loadWorkspaceAsync,
+  loadWorkspaceSync,
+  markDesignDeletedLocal,
+  mergeServerAndLocalWorkspace,
+  saveWorkspaceLocal,
+} from '../utils/offlineStorage';
 
 export function useRealtimeWorkspace() {
-  const [workspace, setWorkspace] = useState<WorkspaceState>(() => createInitialWorkspaceState());
+  const [workspace, setWorkspace] = useState<WorkspaceState>(
+    () => loadWorkspaceSync() || createInitialWorkspaceState(),
+  );
   const [presence, setPresence] = useState<CollaboratorPresence[]>([]);
   const [clientId, setClientId] = useState<string>('');
   const [connected, setConnected] = useState<boolean>(false);
@@ -24,6 +34,28 @@ export function useRealtimeWorkspace() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | null>(null);
   const lastCursorSent = useRef<number>(0);
+  const workspaceRef = useRef<WorkspaceState>(workspace);
+  const hasMutatedRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    workspaceRef.current = workspace;
+    saveWorkspaceLocal(workspace);
+  }, [workspace]);
+
+  // Hydrate full workspace from IndexedDB on startup (preserves large offline uploads/designs)
+  useEffect(() => {
+    let active = true;
+    void loadWorkspaceAsync().then((idbState) => {
+      if (!active || !idbState || hasMutatedRef.current) return;
+      setWorkspace((prev) => {
+        if (hasMutatedRef.current) return prev;
+        return idbState.designs.length >= prev.designs.length ? idbState : prev;
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const sendEvent = useCallback((payload: unknown) => {
     const ws = wsRef.current;
@@ -37,6 +69,11 @@ export function useRealtimeWorkspace() {
 
     const connect = () => {
       if (disposed) return;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setConnected(false);
+        return;
+      }
+
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/ws`;
       const ws = new WebSocket(wsUrl);
@@ -52,11 +89,41 @@ export function useRealtimeWorkspace() {
         try {
           const msg = JSON.parse(event.data);
           switch (msg.type) {
-            case 'workspace:init':
+            case 'workspace:init': {
               if (msg.clientId) setClientId(msg.clientId);
-              if (msg.state) setWorkspace(msg.state);
+              if (msg.state) {
+                const localSnapshot = workspaceRef.current;
+                const serverState = msg.state as WorkspaceState;
+                const merged = mergeServerAndLocalWorkspace(serverState, localSnapshot);
+                setWorkspace(merged);
+
+                // Sync any offline-created or locally modified designs up to the server
+                const serverMap = new Map(serverState.designs.map((d) => [d.id, d]));
+                for (const localDesign of merged.designs) {
+                  const srvDesign = serverMap.get(localDesign.id);
+                  if (
+                    !srvDesign ||
+                    JSON.stringify(srvDesign.pages) !== JSON.stringify(localDesign.pages) ||
+                    srvDesign.title !== localDesign.title
+                  ) {
+                    ws.send(
+                      JSON.stringify({
+                        type: 'design:upsert',
+                        design: localDesign,
+                        autoSyncApprovalStatus: false,
+                      }),
+                    );
+                  }
+                }
+                for (const deletedId of getDeletedDesignIds()) {
+                  if (serverMap.has(deletedId)) {
+                    ws.send(JSON.stringify({ type: 'design:delete', designId: deletedId }));
+                  }
+                }
+              }
               if (msg.presence) setPresence(msg.presence);
               break;
+            }
 
             case 'presence:sync':
               setPresence(msg.presence || []);
@@ -160,15 +227,35 @@ export function useRealtimeWorkspace() {
       ws.onclose = () => {
         if (!disposed) {
           setConnected(false);
-          reconnectTimer.current = window.setTimeout(connect, 1800);
+          if (typeof navigator === 'undefined' || navigator.onLine) {
+            reconnectTimer.current = window.setTimeout(connect, 2400);
+          }
         }
       };
     };
 
+    const handleOnline = () => {
+      if (!disposed && (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED)) {
+        connect();
+      }
+    };
+
+    const handleOffline = () => {
+      setConnected(false);
+      if (reconnectTimer.current) {
+        clearTimeout(reconnectTimer.current);
+        reconnectTimer.current = null;
+      }
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
     connect();
 
     return () => {
       disposed = true;
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       wsRef.current?.close();
     };
@@ -176,6 +263,7 @@ export function useRealtimeWorkspace() {
 
   const upsertDesign = useCallback(
     (design: DesignProject, autoSyncApprovalStatus = false) => {
+      hasMutatedRef.current = true;
       setWorkspace((prev) => {
         const exists = prev.designs.some((d) => d.id === design.id);
         return {
@@ -192,6 +280,8 @@ export function useRealtimeWorkspace() {
 
   const deleteDesign = useCallback(
     (designId: string) => {
+      hasMutatedRef.current = true;
+      markDesignDeletedLocal(designId);
       setWorkspace((prev) => ({
         ...prev,
         designs: prev.designs.filter((d) => d.id !== designId),

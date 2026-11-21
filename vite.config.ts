@@ -4,16 +4,27 @@ import fs from 'fs';
 import path from 'path';
 import {defineConfig} from 'vite';
 
+function collectBuildUrls(dir: string, distRoot: string, out: string[]) {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, {withFileTypes: true})) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      collectBuildUrls(full, distRoot, out);
+    } else if (/\.(js|css|png|jpg|jpeg|svg|woff2?)$/i.test(entry.name)) {
+      const rel = '/' + path.relative(distRoot, full).split(path.sep).join('/');
+      out.push(rel);
+    }
+  }
+}
+
 export default defineConfig(() => {
   return {
     plugins: [
       react(),
       tailwindcss(),
-      // Copies src/assets into dist/ so root-relative URLs like
-      // "/src/assets/images/..." (e.g. generate_image output) still resolve
-      // in production builds. Do not remove.
+      // Copies src/assets into dist/ and injects production precache list into dist/sw.js
       {
-        name: 'copy-unbundled-src-assets',
+        name: 'copy-unbundled-src-assets-and-sw',
         apply: 'build',
         closeBundle(error?: Error): void {
           if (error) {
@@ -24,6 +35,19 @@ export default defineConfig(() => {
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
+          }
+
+          const swPath = path.resolve(distDir, 'sw.js');
+          if (fs.existsSync(swPath)) {
+            const precacheUrls: string[] = [];
+            collectBuildUrls(path.resolve(distDir, 'assets'), distDir, precacheUrls);
+            collectBuildUrls(path.resolve(distDir, 'src/assets'), distDir, precacheUrls);
+            const swCode = fs.readFileSync(swPath, 'utf8');
+            const injected = swCode.replace(
+              '/*__PRECACHE_MANIFEST__*/ []',
+              JSON.stringify(precacheUrls),
+            );
+            fs.writeFileSync(swPath, injected, 'utf8');
           }
         },
       },

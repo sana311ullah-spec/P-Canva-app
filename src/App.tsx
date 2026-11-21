@@ -17,8 +17,11 @@ import {
   ShareExportModal,
 } from './components/studio/Modals';
 import { TopStudioBar } from './components/studio/TopStudioBar';
+import { OfflineBanner } from './components/pwa/OfflineBanner';
 import { STARTER_PHOTOS } from './data/seedWorkspace';
+import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { useRealtimeWorkspace } from './hooks/useRealtimeWorkspace';
+import { cacheSearchPhotos, getCachedPhotos } from './utils/offlineStorage';
 import type {
   ApprovalStatus,
   CanvasElement,
@@ -87,9 +90,11 @@ export default function App() {
     | { mode: 'grid'; elementId: string; cellIndex: number }
     | null
   >(null);
+  const isOnline = useOnlineStatus();
   const [slotPhotoQuery, setSlotPhotoQuery] = useState('');
   const [slotPhotoResults, setSlotPhotoResults] = useState<StockPhotoItem[]>([]);
   const [slotPhotoLoading, setSlotPhotoLoading] = useState(false);
+  const [slotOfflineNotice, setSlotOfflineNotice] = useState(false);
   const slotFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [drawSettings, setDrawSettings] = useState<DrawToolSettings>({
@@ -515,32 +520,37 @@ export default function App() {
 
   if (viewMode === 'hub' || !activeDesign || !activePage) {
     return (
-      <WorkspaceHub
-        workspace={workspace}
-        activeTab={hubTab}
-        onTabChange={setHubTab}
-        onOpenDesign={(designId) => {
-          const target = workspace.designs.find((d) => d.id === designId);
-          setActiveDesignId(designId);
-          if (target?.pages[0]) setActivePageId(target.pages[0].id);
-          setSelectedIds([]);
-          setViewMode('editor');
-        }}
-        onCreateDesignFromPreset={handleCreateDesignFromPreset}
-        onCreateDesignFromTemplate={handleCreateDesignFromTemplate}
-        onCreateDesignFromAI={(aiDesign) => {
-          upsertDesign(aiDesign);
-          setActiveDesignId(aiDesign.id);
-          if (aiDesign.pages[0]) setActivePageId(aiDesign.pages[0].id);
-          setSelectedIds([]);
-          setViewMode('editor');
-        }}
-        onDeleteDesign={deleteDesign}
-        onUpdateBrandKit={updateBrandKit}
-        onUpdateTicket={upsertTicket}
-        onUpdateIntegration={updateIntegration}
-        onAddUpload={addUpload}
-      />
+      <div className="h-screen w-screen flex flex-col bg-black text-white overflow-hidden">
+        <OfflineBanner />
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          <WorkspaceHub
+            workspace={workspace}
+            activeTab={hubTab}
+            onTabChange={setHubTab}
+            onOpenDesign={(designId) => {
+              const target = workspace.designs.find((d) => d.id === designId);
+              setActiveDesignId(designId);
+              if (target?.pages[0]) setActivePageId(target.pages[0].id);
+              setSelectedIds([]);
+              setViewMode('editor');
+            }}
+            onCreateDesignFromPreset={handleCreateDesignFromPreset}
+            onCreateDesignFromTemplate={handleCreateDesignFromTemplate}
+            onCreateDesignFromAI={(aiDesign) => {
+              upsertDesign(aiDesign);
+              setActiveDesignId(aiDesign.id);
+              if (aiDesign.pages[0]) setActivePageId(aiDesign.pages[0].id);
+              setSelectedIds([]);
+              setViewMode('editor');
+            }}
+            onDeleteDesign={deleteDesign}
+            onUpdateBrandKit={updateBrandKit}
+            onUpdateTicket={upsertTicket}
+            onUpdateIntegration={updateIntegration}
+            onAddUpload={addUpload}
+          />
+        </div>
+      </div>
     );
   }
 
@@ -557,6 +567,8 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-black text-white overflow-hidden">
+      <OfflineBanner />
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
       <TopStudioBar
         design={activeDesign}
         linkedTickets={linkedTickets}
@@ -1184,19 +1196,37 @@ export default function App() {
                 e.preventDefault();
                 const q = slotPhotoQuery.trim();
                 if (!q) return;
+                const getOfflineSlotMatches = () => {
+                  const combined = [...getCachedPhotos(), ...STARTER_PHOTOS];
+                  const qLow = q.toLowerCase();
+                  const matches = combined.filter(
+                    (p) =>
+                      p.title.toLowerCase().includes(qLow) ||
+                      p.category.toLowerCase().includes(qLow),
+                  );
+                  return matches.length > 0 ? matches.slice(0, 24) : combined.slice(0, 24);
+                };
+
+                if (!isOnline) {
+                  setSlotOfflineNotice(true);
+                  setSlotPhotoResults(getOfflineSlotMatches());
+                  return;
+                }
+
                 setSlotPhotoLoading(true);
                 try {
                   const res = await fetch(
                     `/api/photos/search?query=${encodeURIComponent(q)}&page=1`,
                   );
+                  if (!res.ok) throw new Error('Offline');
                   const data = await res.json();
-                  setSlotPhotoResults((data.photos || []) as StockPhotoItem[]);
+                  const incoming = (data.photos || []) as StockPhotoItem[];
+                  setSlotOfflineNotice(false);
+                  cacheSearchPhotos(incoming);
+                  setSlotPhotoResults(incoming);
                 } catch {
-                  setSlotPhotoResults(
-                    STARTER_PHOTOS.filter((p) =>
-                      p.title.toLowerCase().includes(q.toLowerCase()),
-                    ),
-                  );
+                  setSlotOfflineNotice(true);
+                  setSlotPhotoResults(getOfflineSlotMatches());
                 } finally {
                   setSlotPhotoLoading(false);
                 }
@@ -1263,52 +1293,60 @@ export default function App() {
               <span>Upload Photo from Gallery</span>
             </button>
 
+            {(!isOnline || slotOfflineNotice) && (
+              <div className="px-3 py-2 rounded-xl bg-neutral-900 border border-amber-500/40 text-[11px] text-amber-300 shrink-0">
+                Connect to internet for new photos — showing cached &amp; built-in photos.
+              </div>
+            )}
+
             <div className="flex-1 overflow-y-auto grid grid-cols-3 gap-2 pr-1">
               {slotPhotoLoading && (
                 <div className="col-span-3 py-6 text-center text-xs text-neutral-400">
                   Loading photos...
                 </div>
               )}
-              {(slotPhotoResults.length > 0 ? slotPhotoResults : STARTER_PHOTOS.slice(0, 24)).map(
-                (photo) => (
-                  <button
-                    key={photo.id}
-                    onClick={() => {
-                      const targetEl = activePage.elements.find(
-                        (el) => el.id === photoTarget.elementId,
-                      );
-                      if (photoTarget.mode === 'frame') {
-                        handleUpdateElement(photoTarget.elementId, { src: photo.src });
-                      } else if (targetEl) {
-                        const total = (targetEl.gridCols || 2) * (targetEl.gridRows || 2);
-                        const nextImgs = Array.from({ length: total }, (_, i) => {
-                          if (i === photoTarget.cellIndex) return photo.src;
-                          return (
-                            targetEl.gridImages?.[i] ||
-                            STARTER_PHOTOS[i % STARTER_PHOTOS.length].src
-                          );
-                        });
-                        handleUpdateElement(photoTarget.elementId, { gridImages: nextImgs });
-                      }
-                      setPhotoTarget(null);
-                      setSlotPhotoQuery('');
-                      setSlotPhotoResults([]);
-                    }}
-                    className="aspect-square rounded-xl overflow-hidden border border-neutral-800 hover:border-white bg-neutral-900"
-                  >
-                    <img
-                      src={photo.thumbUrl || photo.src}
-                      alt={photo.title}
-                      referrerPolicy="no-referrer"
-                      className="w-full h-full object-cover"
-                    />
-                  </button>
-                ),
-              )}
+              {(slotPhotoResults.length > 0
+                ? slotPhotoResults
+                : [...getCachedPhotos(), ...STARTER_PHOTOS].slice(0, 24)
+              ).map((photo) => (
+                <button
+                  key={photo.id}
+                  onClick={() => {
+                    const targetEl = activePage.elements.find(
+                      (el) => el.id === photoTarget.elementId,
+                    );
+                    if (photoTarget.mode === 'frame') {
+                      handleUpdateElement(photoTarget.elementId, { src: photo.src });
+                    } else if (targetEl) {
+                      const total = (targetEl.gridCols || 2) * (targetEl.gridRows || 2);
+                      const nextImgs = Array.from({ length: total }, (_, i) => {
+                        if (i === photoTarget.cellIndex) return photo.src;
+                        return (
+                          targetEl.gridImages?.[i] ||
+                          STARTER_PHOTOS[i % STARTER_PHOTOS.length].src
+                        );
+                      });
+                      handleUpdateElement(photoTarget.elementId, { gridImages: nextImgs });
+                    }
+                    setPhotoTarget(null);
+                    setSlotPhotoQuery('');
+                    setSlotPhotoResults([]);
+                  }}
+                  className="aspect-square rounded-xl overflow-hidden border border-neutral-800 hover:border-white bg-neutral-900"
+                >
+                  <img
+                    src={photo.thumbUrl || photo.src}
+                    alt={photo.title}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover"
+                  />
+                </button>
+              ))}
             </div>
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
