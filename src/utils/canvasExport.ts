@@ -4,8 +4,15 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = reject;
+    const timer = window.setTimeout(() => reject(new Error('Image timeout')), 5000);
+    img.onload = () => {
+      window.clearTimeout(timer);
+      resolve(img);
+    };
+    img.onerror = (err) => {
+      window.clearTimeout(timer);
+      reject(err);
+    };
     img.src = src;
   });
 }
@@ -52,19 +59,35 @@ function wrapTextLines(
   return lines;
 }
 
-export async function renderPageToDataUrl(
+export async function renderPageToCanvas(
   design: DesignProject,
   page: DesignPage,
-  format: 'png' | 'jpeg',
-  scale = 1,
-): Promise<string> {
+  targetWidth: number,
+  targetHeight: number,
+): Promise<HTMLCanvasElement> {
   const canvas = document.createElement('canvas');
-  canvas.width = Math.round(design.width * scale);
-  canvas.height = Math.round(design.height * scale);
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
   const ctx = canvas.getContext('2d');
-  if (!ctx) return '';
+  if (!ctx) return canvas;
 
-  ctx.scale(scale, scale);
+  // Fill outer frame background cleanly
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, targetWidth, targetHeight);
+
+  const fitScale = Math.min(targetWidth / design.width, targetHeight / design.height);
+  const drawW = design.width * fitScale;
+  const drawH = design.height * fitScale;
+  const offsetX = (targetWidth - drawW) / 2;
+  const offsetY = (targetHeight - drawH) / 2;
+
+  ctx.save();
+  ctx.translate(offsetX, offsetY);
+  ctx.scale(fitScale, fitScale);
+
+  ctx.beginPath();
+  ctx.rect(0, 0, design.width, design.height);
+  ctx.clip();
 
   // Page background
   ctx.fillStyle = page.backgroundColor || '#FFFFFF';
@@ -75,6 +98,22 @@ export async function renderPageToDataUrl(
     await drawElement(ctx, el);
   }
 
+  ctx.restore();
+  return canvas;
+}
+
+export async function renderPageToDataUrl(
+  design: DesignProject,
+  page: DesignPage,
+  format: 'png' | 'jpeg',
+  scale = 1,
+): Promise<string> {
+  const canvas = await renderPageToCanvas(
+    design,
+    page,
+    Math.round(design.width * scale),
+    Math.round(design.height * scale),
+  );
   return canvas.toDataURL(format === 'jpeg' ? 'image/jpeg' : 'image/png', 0.94);
 }
 
@@ -421,4 +460,183 @@ export function triggerFileDownload(href: string, filename: string) {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+}
+
+export interface VideoExportOptions {
+  format: 'mp4' | 'webm';
+  quality: '720p' | '1080p';
+  secondsPerSlide: number;
+  onProgress?: (currentSlide: number, totalSlides: number) => void;
+}
+
+export interface VideoExportResult {
+  blob: Blob;
+  actualFormat: 'mp4' | 'webm';
+  mimeType: string;
+  usedFallback: boolean;
+}
+
+function pickSupportedVideoMime(preferred: 'mp4' | 'webm'): {
+  mimeType: string;
+  actualFormat: 'mp4' | 'webm';
+  usedFallback: boolean;
+} {
+  if (typeof MediaRecorder === 'undefined') {
+    throw new Error('Video recording is not supported in this browser.');
+  }
+
+  const mp4Candidates = [
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4;codecs=avc1.42E01E',
+    'video/mp4;codecs=avc1',
+    'video/mp4',
+  ];
+  const webmCandidates = [
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm',
+  ];
+
+  const isSupported = (type: string) =>
+    typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported(type);
+
+  if (preferred === 'mp4') {
+    for (const mime of mp4Candidates) {
+      if (isSupported(mime)) {
+        return { mimeType: mime, actualFormat: 'mp4', usedFallback: false };
+      }
+    }
+    for (const mime of webmCandidates) {
+      if (isSupported(mime)) {
+        return { mimeType: mime, actualFormat: 'webm', usedFallback: true };
+      }
+    }
+  } else {
+    for (const mime of webmCandidates) {
+      if (isSupported(mime)) {
+        return { mimeType: mime, actualFormat: 'webm', usedFallback: false };
+      }
+    }
+    for (const mime of mp4Candidates) {
+      if (isSupported(mime)) {
+        return { mimeType: mime, actualFormat: 'mp4', usedFallback: true };
+      }
+    }
+  }
+
+  return {
+    mimeType: '',
+    actualFormat: 'webm',
+    usedFallback: preferred === 'mp4',
+  };
+}
+
+export async function exportDesignAsVideo(
+  design: DesignProject,
+  options: VideoExportOptions,
+): Promise<VideoExportResult> {
+  const pages = design.pages.length > 0 ? design.pages : [];
+  if (pages.length === 0) {
+    throw new Error('No pages available to record.');
+  }
+
+  const targetWidth = options.quality === '1080p' ? 1920 : 1280;
+  const targetHeight = options.quality === '1080p' ? 1080 : 720;
+  const { mimeType, actualFormat, usedFallback } = pickSupportedVideoMime(options.format);
+
+  // Pre-render all slides offscreen so recording proceeds smoothly offline with zero lag
+  const renderedSlides: HTMLCanvasElement[] = [];
+  for (let i = 0; i < pages.length; i++) {
+    renderedSlides.push(await renderPageToCanvas(design, pages[i], targetWidth, targetHeight));
+  }
+
+  const recordCanvas = document.createElement('canvas');
+  recordCanvas.width = targetWidth;
+  recordCanvas.height = targetHeight;
+  const recordCtx = recordCanvas.getContext('2d');
+  if (!recordCtx) {
+    throw new Error('Could not initialize video canvas.');
+  }
+
+  if (typeof recordCanvas.captureStream !== 'function') {
+    throw new Error('Canvas video capture is not supported on this device.');
+  }
+
+  // Paint first slide immediately before starting capture stream
+  recordCtx.drawImage(renderedSlides[0], 0, 0);
+
+  const stream = recordCanvas.captureStream(30);
+  const videoTrack = stream.getVideoTracks()[0] as
+    | (MediaStreamTrack & { requestFrame?: () => void })
+    | undefined;
+
+  const recorderOptions: MediaRecorderOptions = {
+    videoBitsPerSecond: options.quality === '1080p' ? 8_000_000 : 4_000_000,
+  };
+  if (mimeType) {
+    recorderOptions.mimeType = mimeType;
+  }
+
+  const recorder = new MediaRecorder(stream, recorderOptions);
+  const chunks: BlobPart[] = [];
+
+  recorder.ondataavailable = (ev) => {
+    if (ev.data && ev.data.size > 0) {
+      chunks.push(ev.data);
+    }
+  };
+
+  let activeSlideIdx = 0;
+  let stopped = false;
+
+  const pumpInterval = window.setInterval(() => {
+    if (stopped) return;
+    const slideCanvas = renderedSlides[activeSlideIdx];
+    if (slideCanvas) {
+      recordCtx.drawImage(slideCanvas, 0, 0);
+      // Toggle 1px bottom-right alpha subtly only on every draw or call requestFrame so static slides stay at 30fps
+      videoTrack?.requestFrame?.();
+    }
+  }, 1000 / 30);
+
+  const completionPromise = new Promise<VideoExportResult>((resolve, reject) => {
+    recorder.onerror = () => {
+      stopped = true;
+      window.clearInterval(pumpInterval);
+      stream.getTracks().forEach((t) => t.stop());
+      reject(new Error('Video recording failed.'));
+    };
+
+    recorder.onstop = () => {
+      stopped = true;
+      window.clearInterval(pumpInterval);
+      stream.getTracks().forEach((t) => t.stop());
+      const finalMime = recorder.mimeType || mimeType || (actualFormat === 'mp4' ? 'video/mp4' : 'video/webm');
+      const finalFormat: 'mp4' | 'webm' = finalMime.includes('mp4') ? 'mp4' : 'webm';
+      const blob = new Blob(chunks, { type: finalMime });
+      resolve({
+        blob,
+        actualFormat: finalFormat,
+        mimeType: finalMime,
+        usedFallback: options.format === 'mp4' && finalFormat !== 'mp4' ? true : usedFallback,
+      });
+    };
+  });
+
+  recorder.start(250);
+
+  const slideDurationMs = Math.max(1000, options.secondsPerSlide * 1000);
+  for (let i = 0; i < renderedSlides.length; i++) {
+    activeSlideIdx = i;
+    recordCtx.drawImage(renderedSlides[i], 0, 0);
+    videoTrack?.requestFrame?.();
+    options.onProgress?.(i + 1, renderedSlides.length);
+    await new Promise((r) => window.setTimeout(r, slideDurationMs));
+  }
+
+  if (recorder.state !== 'inactive') {
+    recorder.stop();
+  }
+
+  return completionPromise;
 }

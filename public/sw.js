@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'pcanva-v2';
+const CACHE_VERSION = 'pcanva-v4';
 const SHELL_CACHE = `${CACHE_VERSION}-shell`;
 const FONT_CACHE = `${CACHE_VERSION}-fonts`;
 const PHOTO_CACHE = `${CACHE_VERSION}-photos`;
@@ -75,8 +75,15 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
 
-  // Never intercept WebSocket upgrades or Vite HMR/dev internals incorrectly
-  if (url.pathname.startsWith('/ws')) return;
+  // Never intercept WebSocket endpoints or Vite internal client
+  if (
+    url.pathname.startsWith('/ws') ||
+    url.pathname.startsWith('/vite-ws') ||
+    url.pathname.startsWith('/@vite/') ||
+    url.pathname.startsWith('/@react-refresh')
+  ) {
+    return;
+  }
 
   // 1. Navigation requests (app shell): Network-first with fast cache fallback for instant offline load
   if (request.mode === 'navigate') {
@@ -169,7 +176,35 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 4. Same-origin app files (JS, CSS, modules, icons, images): Stale-while-revalidate
+  // 4. Dev source modules & Vite pre-bundled deps: Network-first so ?v= hashes never drift across restarts,
+  // while still falling back to cache when offline.
+  if (
+    url.origin === self.location.origin &&
+    ((url.pathname.startsWith('/src/') && !url.pathname.startsWith('/src/assets/')) ||
+      url.pathname.startsWith('/node_modules/') ||
+      url.pathname.startsWith('/@') ||
+      url.searchParams.has('v') ||
+      url.searchParams.has('t'))
+  ) {
+    event.respondWith(
+      fetch(request)
+        .then((res) => {
+          if (res && res.ok) {
+            const copy = res.clone();
+            event.waitUntil(caches.open(SHELL_CACHE).then((c) => c.put(request, copy)));
+          }
+          return res;
+        })
+        .catch(async () => {
+          const cache = await caches.open(SHELL_CACHE);
+          const cached = await cache.match(request);
+          return cached || Response.error();
+        }),
+    );
+    return;
+  }
+
+  // 5. Same-origin production assets, icons & local images: Stale-while-revalidate
   if (url.origin === self.location.origin) {
     event.respondWith(
       caches.open(SHELL_CACHE).then(async (cache) => {

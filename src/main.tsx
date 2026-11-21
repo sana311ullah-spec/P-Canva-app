@@ -4,37 +4,46 @@ import './index.css';
 import {warmOfflineAssets} from './utils/offlineStorage';
 
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
-  window.addEventListener(
-    'load',
-    async () => {
-      try {
-        const registrations = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(
-          registrations
-            .filter((reg) => reg.active?.scriptURL.includes('dev-sw.js'))
-            .map((reg) => reg.unregister()),
-        );
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  let refreshing = false;
 
-        const registration = await navigator.serviceWorker.register('/sw.js', {
-          scope: '/',
-        });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || refreshing) return;
+    if (sessionStorage.getItem('pcanva-sw-refreshed')) return;
+    refreshing = true;
+    sessionStorage.setItem('pcanva-sw-refreshed', '1');
+    window.location.reload();
+  });
 
-        registration.addEventListener('updatefound', () => {
-          const worker = registration.installing;
-          if (!worker) return;
-          worker.addEventListener('statechange', () => {
-            if (worker.state === 'installed' && navigator.serviceWorker.controller) {
-              worker.postMessage({type: 'SKIP_WAITING'});
-            }
-          });
+  (async () => {
+    try {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(
+        registrations
+          .filter((reg) => reg.active?.scriptURL.includes('dev-sw.js'))
+          .map((reg) => reg.unregister()),
+      );
+
+      const registration = await navigator.serviceWorker.register('/sw.js', {
+        scope: '/',
+        updateViaCache: 'none',
+      });
+      void registration.update();
+
+      registration.addEventListener('updatefound', () => {
+        const worker = registration.installing;
+        if (!worker) return;
+        worker.addEventListener('statechange', () => {
+          if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+            worker.postMessage({type: 'SKIP_WAITING'});
+          }
         });
-      } catch {
-        // Non-fatal in unsupported contexts
-      }
-      void warmOfflineAssets();
-    },
-    {once: true},
-  );
+      });
+    } catch {
+      // Non-fatal in unsupported contexts
+    }
+    void warmOfflineAssets();
+  })();
 }
 
 createRoot(document.getElementById('root')!).render(<App />);

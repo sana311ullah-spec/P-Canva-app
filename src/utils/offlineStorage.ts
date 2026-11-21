@@ -186,7 +186,7 @@ export async function warmOfflineAssets(): Promise<void> {
   // Quietly warm browser & SW cache in the background without blocking UI
   if ('caches' in window) {
     try {
-      const cache = await caches.open('pcanva-v2-shell');
+      const cache = await caches.open('pcanva-v4-shell');
       await Promise.allSettled(
         coreLocalAssets.map(async (url) => {
           const existing = await cache.match(url);
